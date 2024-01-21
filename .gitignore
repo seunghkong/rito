@@ -1,0 +1,6 @@
+.env
+userCache.json
+token.json
+credentials.json
+champion_*.json
+__pycache__/*
