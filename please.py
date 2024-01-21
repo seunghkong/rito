@@ -2,7 +2,7 @@ import datetime
 import json
 import os
 import os.path
-from itertools import cycle
+from itertools import cycle, zip_longest
 
 import requests
 from backoff import expo, on_exception
@@ -57,10 +57,10 @@ def champion_mapper(version) -> dict:
             raw_champions = json.load(f)
     champion_data: dict = raw_champions["data"]
     return {
-        champion_meta["key"]: champion_name
+        int(champion_meta["key"]): champion_name
         for champion_name, champion_meta in champion_data.items()
     }
-
+CHAMPION_MAPPER=champion_mapper("14.1.1")
 
 class RiotUser:
     uid: str
@@ -70,6 +70,7 @@ class RiotUser:
     puuid: str = ""
     summoner_id: str
     tier: dict
+    champions: list
     last_played: str
 
     def __init__(self, sheet_row: list[str]):
@@ -83,6 +84,7 @@ class RiotUser:
             self.tag = "KR1"
         self.puuid = self._get_puuid()
         self.summoner_id = self._get_summoners_id()
+        self.champions = self._get_top_champs()
         self.tier = self._get_tier()
         self.last_played = self._get_recent_match_time()
 
@@ -182,6 +184,27 @@ class RiotUser:
         )
 
     @on_exception(expo, RateLimitException, max_tries=10)
+    def _get_top_champs(self, count:int=3) -> list:
+        response: requests.Response = requests.get(
+            f"https://kr.api.riotgames.com/lol/champion-mastery/v4/champion-masteries/by-puuid/{self.puuid}/top",
+            timeout=5,
+            params={"count": count},
+            headers={"X-Riot-Token": RIOT_API_KEY},
+        )
+        try:
+            response.raise_for_status()
+            resp_json: list[dict] = response.json()
+        except exceptions.HTTPError as e:
+            if response.status_code == 429:
+                retry_after = response.headers["Retry-After"]
+                print(f"Ratelimit reached. Wait {retry_after} seconds..")
+                raise RateLimitException("ratelimited", retry_after) from e
+            print(f"user {self.name}: top champion list not found. error: {e}")
+            return []
+        return [CHAMPION_MAPPER.get(champ_mastery_dto.get("championId"), "")
+                for champ_mastery_dto in resp_json]
+
+    @on_exception(expo, RateLimitException, max_tries=10)
     def _get_tier(self) -> dict:
         response: requests.Response = requests.get(
             f"{RIOT_REGIONAL_ROUTE}/lol/league/v4/entries/by-summoner/{self.summoner_id}",
@@ -253,11 +276,13 @@ def main():
                 else:
                     new_values.extend([deep_get(usr.tier, f"{col}.tier"),
                                        deep_get(usr.tier, f"{col}.winloss")])
+            for _, champ in zip_longest(range(3), usr.champions, fillvalue=""):
+                new_values.append(champ)
             new_values.append(usr.last_played)
             (
                 sheet.values()
                 .update(
-                    spreadsheetId=GOOGLE_SHEET_ID, range=f"회원정보!L{current_row}:P{current_row}",
+                    spreadsheetId=GOOGLE_SHEET_ID, range=f"회원정보!L{current_row}:S{current_row}",
                     body={
                         "values": [new_values]
                     },
