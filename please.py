@@ -247,7 +247,7 @@ def main():
         )
         print(f"{credentials.service_account_email} successfully connected.")
         # Call the Sheets API
-        sheet = service.spreadsheets()
+        sheet = service.spreadsheets() # pylint: disable=no-member
         result: list[str] = (
             sheet.values()
             .get(spreadsheetId=GOOGLE_SHEET_ID, range=RANGE_NAME, majorDimension="ROWS")
