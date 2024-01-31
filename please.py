@@ -69,9 +69,10 @@ class RiotUser:
     tag: str
     puuid: str = ""
     summoner_id: str
-    tier: dict
-    champions: list
-    last_played: str
+    # tier: dict
+    # champions: list
+    last_played_lol: str = "N/A"
+    last_played_tft: str = "N/A"
 
     def __init__(self, sheet_row: list[str]):
         self.uid = sheet_row[0]
@@ -84,9 +85,10 @@ class RiotUser:
             self.tag = "KR1"
         self.puuid = self._get_puuid()
         self.summoner_id = self._get_summoners_id()
-        self.champions = self._get_top_champs()
-        self.tier = self._get_tier()
-        self.last_played = self._get_recent_match_time()
+        # self.champions = self._get_top_champs()
+        # self.tier = self._get_tier()
+        self.last_played_lol = self._get_recent_match_time_lol()
+        self.last_played_tft = self._get_recent_match_time_tft()
 
     @on_exception(expo, RateLimitException, max_tries=10)
     def _get_puuid(self):
@@ -148,7 +150,31 @@ class RiotUser:
             response.raise_for_status()
             resp_json: list[str] = response.json()
             if len(resp_json) < 1:
-                raise ValueError("no recent matches found.")
+                print("no league match")
+                return ""
+            return resp_json[0]
+        except exceptions.HTTPError as e:
+            if response.status_code == 429:
+                retry_after = response.headers["Retry-After"]
+                print(f"Ratelimit reached. Wait {retry_after} seconds..")
+                raise RateLimitException("ratelimited", retry_after) from e
+            raise ValueError(f"user {self.name}: {e}") from e
+        except ValueError as e:
+            raise ValueError(f"user {self.name}: {e}. Skipping..") from e
+        
+    @on_exception(expo, RateLimitException, max_tries=10)
+    def _get_recent_match_tft(self, match_type="", count: int = 1) -> str:
+        response: requests.Response = requests.get(
+            f"https://asia.api.riotgames.com/tft/match/v1/matches/by-puuid/{self.puuid}/ids",
+            params={"type": match_type, "count": count},
+            timeout=5,
+            headers={"X-Riot-Token": RIOT_API_KEY},
+        )
+        try:
+            response.raise_for_status()
+            resp_json: list[str] = response.json()
+            if len(resp_json) < 1:
+                return ""
             return resp_json[0]
         except exceptions.HTTPError as e:
             if response.status_code == 429:
@@ -160,28 +186,60 @@ class RiotUser:
             raise ValueError(f"user {self.name}: {e}. Skipping..") from e
 
     @on_exception(expo, RateLimitException, max_tries=10)
-    def _get_recent_match_time(self) -> str:
-        recent_match = self._get_recent_match()
-        response: requests.Response = requests.get(
-            f"https://asia.api.riotgames.com/lol/match/v5/matches/{recent_match}",
+    def _get_recent_match_time_lol(self) -> str:
+        recent_match_lol = self._get_recent_match()
+        if not recent_match_lol:
+            return "N/A"
+        response_lol: requests.Response = requests.get(
+            f"https://asia.api.riotgames.com/lol/match/v5/matches/{recent_match_lol}",
             timeout=5,
             headers={"X-Riot-Token": RIOT_API_KEY},
         )
         try:
-            response.raise_for_status()
-            resp_json: dict = response.json()
+            response_lol.raise_for_status()
+            resp_json_lol: dict = response_lol.json()
+            game_creation_lol = deep_get(resp_json_lol, "info.gameCreation", "0")
         except exceptions.HTTPError as e:
-            if response.status_code == 429:
-                retry_after = response.headers["Retry-After"]
+            if response_lol.status_code == 429:
+                retry_after = response_lol.headers["Retry-After"]
                 print(f"Ratelimit reached. Wait {retry_after} seconds..")
                 raise RateLimitException("ratelimited", retry_after) from e
-            print(f"user {self.name}: match {recent_match} not found. error: {e}")
-        game_creation = deep_get(resp_json, "info.gameCreation", "0")
-        return (
-            datetime.datetime.fromtimestamp(int(game_creation) // 1000)
-            .astimezone(datetime.timezone(datetime.timedelta(hours=9)))
-            .strftime("%Y-%m-%d %H:%M:%S")
+            if response_lol.status_code == 404:
+                return "N/A"
+            print(f"user {self.name}: match {recent_match_lol} not found. error: {e}")
+                
+        
+        
+        game_date = datetime.datetime.fromtimestamp(int(game_creation_lol) // 1000)
+        # text_color = "[Green]" if (game_date + datetime.timedelta(days=30)) > datetime.datetime.now() else "[Red]"
+        return f"{game_date.astimezone(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")}"
+    
+    @on_exception(expo, RateLimitException, max_tries=10)
+    def _get_recent_match_time_tft(self) -> str:
+        recent_match_tft = self._get_recent_match_tft()
+        if not recent_match_tft:
+            return "N/A"
+        response_tft: requests.Response = requests.get(
+            f"https://asia.api.riotgames.com/tft/match/v1/matches/{recent_match_tft}",
+            timeout=5,
+            headers={"X-Riot-Token": RIOT_API_KEY},
         )
+        try:
+            response_tft.raise_for_status()
+            resp_json_tft: dict = response_tft.json()
+            game_creation_tft = deep_get(resp_json_tft, "info.game_datetime", "0")
+        except exceptions.HTTPError as e:
+            if response_tft.status_code == 429:
+                retry_after = response_tft.headers["Retry-After"]
+                print(f"Ratelimit reached. Wait {retry_after} seconds..")
+                raise RateLimitException("ratelimited", retry_after) from e
+            if response_tft.status_code == 404:
+                return "N/A"
+            print(f"user {self.name}: match {recent_match_tft} not found. error: {e}")
+        
+        game_date = datetime.datetime.fromtimestamp(int(game_creation_tft) // 1000)
+        # text_color = "[Green]" if (game_date + datetime.timedelta(days=30)) > datetime.datetime.now() else "[Red]"
+        return f"{game_date.astimezone(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")}"
 
     @on_exception(expo, RateLimitException, max_tries=10)
     def _get_top_champs(self, count:int=3) -> list:
@@ -232,7 +290,7 @@ class RiotUser:
             return {}
 
     def __str__(self) -> str:
-        return f"user {self.name}: {self.id}#{self.tag} of puuid {self.puuid} last played in {self.last_played}"
+        return f"user {self.name}: {self.id}#{self.tag} of puuid {self.puuid} last played league - {self.last_played_lol} tft - {self.last_played_tft} "
 
 
 def main():
@@ -270,19 +328,20 @@ def main():
                 print(e)
                 continue
             new_values = []
-            for col in ["RANKED_SOLO_5x5", "RANKED_FLEX_SR"]:
-                if not usr.tier.get(col):
-                    new_values.extend([""]*2)
-                else:
-                    new_values.extend([deep_get(usr.tier, f"{col}.tier"),
-                                       deep_get(usr.tier, f"{col}.winloss")])
-            for _, champ in zip_longest(range(3), usr.champions, fillvalue=""):
-                new_values.append(champ)
-            new_values.append(usr.last_played)
+            # for col in ["RANKED_SOLO_5x5", "RANKED_FLEX_SR"]:
+            #     if not usr.tier.get(col):
+            #         new_values.extend([""]*2)
+            #     else:
+            #         new_values.extend([deep_get(usr.tier, f"{col}.tier"),
+            #                            deep_get(usr.tier, f"{col}.winloss")])
+            # for _, champ in zip_longest(range(3), usr.champions, fillvalue=""):
+            #     new_values.append(champ)
+            new_values.append(usr.last_played_lol)
+            new_values.append(usr.last_played_tft)
             (
                 sheet.values()
                 .update(
-                    spreadsheetId=GOOGLE_SHEET_ID, range=f"회원정보!L{current_row}:S{current_row}",
+                    spreadsheetId=GOOGLE_SHEET_ID, range=f"회원정보!Z{current_row}:AA{current_row}",
                     body={
                         "values": [new_values]
                     },
